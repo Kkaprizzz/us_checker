@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from html import escape
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
@@ -11,26 +12,31 @@ from aiogram.types import BotCommand, Message
 from us_checker.checker import RateLimited, Status, TmeChecker
 from us_checker.config import Config, load_config
 from us_checker.filters import is_clean
+from us_checker.gen import Candidate
+from us_checker.gen.quality import score as name_score
+from us_checker.gen.strategies import default_strategies
 from us_checker.scanner import Scanner
 from us_checker.storage import Storage
-from us_checker.wordlist import Candidate, build_candidates, score
 
 log = logging.getLogger(__name__)
 
+STRATEGY_TITLES = {s.key: s.title for s, _ in default_strategies()}
+
 HELP = (
-    "<b>Ищу свободные изысканные юзы</b> (только a-z, без цифр и _): "
-    "godeless, incelious, noxelle…\n\n"
+    "<b>Ищу свободные оригинальные юзы</b> (только a-z, без цифр и _).\n"
+    "20 разных стратегий: несуществующие слова в духе разных языков, тёмные, "
+    "эльфийские и восточные слоги, греко-латынь, мутации редких слов, слияния, перевёртыши.\n\n"
     "/scan — запустить поиск\n"
     "/pause — пауза\n"
     "/free — что уже нашлось\n"
-    "/bad <code>юз юз …</code> — Telegram сказал «некорректный», больше не показывать\n"
-    "/preview — какие юзы сейчас в очереди\n"
+    "/preview — показать 40 свежих кандидатов (без проверки)\n"
+    "/styles — какие стратегии сколько нашли\n"
+    "/bad <code>юз юз …</code> — Telegram не дал поставить, больше не показывать\n"
     "/check <code>юз</code> — проверить один юз\n"
-    "/add <code>слово слово …</code> — добавить свои слова в приоритет\n"
+    "/add <code>слово …</code> — проверить свои варианты вне очереди\n"
     "/stats — прогресс\n"
     "/stop — не присылать находки\n\n"
-    "⚠️ «Свободен» = на t.me пусто. Такой юз всё равно может быть в резерве "
-    "у Telegram — проверь в настройках, а нерабочие скидывай в /bad."
+    "⚠️ «Свободен» = на t.me пусто. Финальная проверка — поставить в настройках."
 )
 
 
@@ -53,7 +59,10 @@ def build_router(cfg: Config, storage: Storage, scanner: Scanner, checker: TmeCh
     async def scan(msg: Message) -> None:
         await storage.add_subscriber(msg.chat.id)
         scanner.start()
-        await msg.answer("🔎 Поиск запущен. Находки буду кидать сюда.")
+        await msg.answer(
+            f"🔎 Поиск запущен: {cfg.workers} воркеров, до {cfg.rps:g} проверок/с. "
+            "Находки буду кидать сюда."
+        )
 
     @router.message(Command("pause"))
     async def pause(msg: Message) -> None:
@@ -65,16 +74,27 @@ def build_router(cfg: Config, storage: Storage, scanner: Scanner, checker: TmeCh
         c = await storage.counts()
         state = "работает" if scanner.running.is_set() else "на паузе"
         text = (
-            f"Сканер: <b>{state}</b>\n"
-            f"Проход: {scanner.position}/{scanner.total}"
-            + (f" (сейчас @{scanner.current})" if scanner.current else "")
-            + f"\nПроверено: {sum(c.values())}\n"
-            f"Свободных: <b>{c.get('free', 0)}</b> · занятых: {c.get('taken', 0)}"
-            f" · ошибок: {c.get('error', 0)}"
+            f"Сканер: <b>{state}</b> · {scanner.rate:.0f} проверок/мин\n"
+            f"За сессию: проверено {scanner.checked}, найдено {scanner.found}\n"
+            f"Очередь: {scanner.queue.qsize()}\n"
+            f"Всего в базе: {sum(c.values())} · свободных <b>{c.get('free', 0)}</b>"
+            f" · занятых {c.get('taken', 0)} · в /bad {c.get('invalid', 0)}"
         )
         if scanner.last_error:
             text += f"\n\n❗ {scanner.last_error}"
         await msg.answer(text)
+
+    @router.message(Command("styles"))
+    async def styles(msg: Message) -> None:
+        rows = await storage.stats_by_source()
+        if not rows:
+            await msg.answer("Статистики пока нет. Запусти /scan.")
+            return
+        lines = [
+            f"{STRATEGY_TITLES.get(src, src)}: {total} пров. · ✅ {free}" + (f" · 🚫 {bad}" if bad else "")
+            for src, total, free, bad in rows
+        ]
+        await msg.answer("<b>Стратегии</b>\n" + "\n".join(lines))
 
     @router.message(Command("free"))
     async def free(msg: Message) -> None:
@@ -82,14 +102,20 @@ def build_router(cfg: Config, storage: Storage, scanner: Scanner, checker: TmeCh
         if not rows:
             await msg.answer("Пока пусто. Запусти /scan.")
             return
-        lines = [f"@{name} · {s:.1f}" for name, s in rows]
-        await msg.answer("<b>Свободные (по ценности):</b>\n" + "\n".join(lines))
+        await msg.answer("<b>Свободные (свежие сверху):</b>\n" + "\n".join(f"@{n}" for n, _ in rows))
+
+    @router.message(Command("preview"))
+    async def preview(msg: Message) -> None:
+        await msg.answer("Генерирую…")
+        cands = await scanner.preview(40)
+        lines = [f"{c.name} · {escape(STRATEGY_TITLES.get(c.source, c.source))}" for c in cands]
+        await msg.answer("\n".join(lines) or "Ничего не сгенерилось — проверь STRATEGIES.")
 
     @router.message(Command("check"))
     async def check(msg: Message, command: CommandObject) -> None:
         name = (command.args or "").strip().lstrip("@").lower()
         if not name:
-            await msg.answer("Пример: /check money")
+            await msg.answer("Пример: /check velora")
             return
         if not is_clean(name, 5, 32):
             await msg.answer("Нужно от 5 символов, только a-z, без цифр и _ (и не на «bot»).")
@@ -100,7 +126,7 @@ def build_router(cfg: Config, storage: Storage, scanner: Scanner, checker: TmeCh
             await msg.answer(f"t.me просит подождать {e.retry_after:.0f}с, попробуй позже.")
             return
         if status != Status.ERROR:
-            await storage.save_check(name, status.value, score(name, "premium"))
+            await storage.save_check(name, status.value, name_score(name), "custom")
         text = {
             Status.FREE: f"✅ @{name} — на t.me пусто, похоже свободен",
             Status.TAKEN: f"❌ @{name} — занят",
@@ -112,33 +138,24 @@ def build_router(cfg: Config, storage: Storage, scanner: Scanner, checker: TmeCh
     async def bad(msg: Message, command: CommandObject) -> None:
         names = [w.lstrip("@").lower() for w in (command.args or "").replace(",", " ").split()]
         if not names:
-            await msg.answer("Пример: /bad godeless incelious")
+            await msg.answer("Пример: /bad velora kushon")
             return
         await storage.mark_invalid(names)
         await msg.answer(f"Убрал {len(names)} шт. Больше их не покажу.")
 
-    @router.message(Command("preview"))
-    async def preview(msg: Message) -> None:
-        cands = build_candidates(
-            cfg.min_len, cfg.max_len, cfg.sources, cfg.wordfreq_top,
-            extra=await storage.extra_words(),
-        )
-        top = [f"{c.name} · {c.score:.1f}" for c in cands[:40]]
-        await msg.answer(
-            f"В очереди {len(cands)} кандидатов ({', '.join(cfg.sources)}). Топ-40:\n"
-            + "\n".join(top)
-        )
-
     @router.message(Command("add"))
     async def add(msg: Message, command: CommandObject) -> None:
-        words = [w.lstrip("@").lower() for w in (command.args or "").split()]
+        words = [w.lstrip("@").lower() for w in (command.args or "").replace(",", " ").split()]
         good = [w for w in words if is_clean(w, cfg.min_len, cfg.max_len)]
-        bad = sorted(set(words) - set(good))
+        bad_words = sorted(set(words) - set(good))
         if good:
             await storage.add_words(good)
-        text = f"Добавил: {len(good)}. Попадут в следующий проход."
-        if bad:
-            text += f"\nПропустил (не проходят фильтр {cfg.min_len}-{cfg.max_len} a-z): {', '.join(bad)}"
+        text = f"Добавил: {len(good)}. Проверю вне очереди, когда идёт /scan."
+        if bad_words:
+            text += (
+                f"\nПропустил (не проходят фильтр {cfg.min_len}-{cfg.max_len} a-z): "
+                + ", ".join(bad_words)
+            )
         await msg.answer(text)
 
     return router
@@ -152,7 +169,7 @@ async def run(cfg: Config) -> None:
     async def on_found(cand: Candidate) -> None:
         text = (
             f"🔥 <b>@{cand.name}</b> — похоже свободен\n"
-            f"Ценность: {cand.score:.1f} · {cand.source}\n"
+            f"{escape(STRATEGY_TITLES.get(cand.source, cand.source))}\n"
             f"https://t.me/{cand.name}"
         )
         for chat_id in await storage.subscribers():
@@ -161,7 +178,8 @@ async def run(cfg: Config) -> None:
             except Exception:
                 log.exception("не смог отправить в %s", chat_id)
 
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(limit=cfg.workers * 2)
+    async with aiohttp.ClientSession(connector=connector) as session:
         checker = TmeChecker(session)
         scanner = Scanner(cfg, storage, checker, on_found)
         dp = Dispatcher()
@@ -170,12 +188,15 @@ async def run(cfg: Config) -> None:
             BotCommand(command="scan", description="Запустить поиск"),
             BotCommand(command="pause", description="Пауза"),
             BotCommand(command="free", description="Найденные юзы"),
-            BotCommand(command="check", description="Проверить юз"),
+            BotCommand(command="preview", description="Примеры кандидатов"),
+            BotCommand(command="styles", description="Статистика стратегий"),
             BotCommand(command="bad", description="Отметить нерабочие юзы"),
-            BotCommand(command="preview", description="Очередь кандидатов"),
-            BotCommand(command="add", description="Добавить свои слова"),
+            BotCommand(command="check", description="Проверить юз"),
+            BotCommand(command="add", description="Свои варианты вне очереди"),
             BotCommand(command="stats", description="Прогресс"),
         ])
+        # Прогреваем генератор в фоне, пока бот уже отвечает
+        asyncio.create_task(scanner.prepare())
         try:
             await dp.start_polling(bot)
         finally:
