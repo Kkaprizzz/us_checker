@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS checks (
 CREATE TABLE IF NOT EXISTS subscribers (
     chat_id INTEGER PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS extra_words (
     word TEXT PRIMARY KEY
 );
@@ -137,3 +141,15 @@ class Storage:
         await self.db.execute("DELETE FROM extra_words")
         await self.db.commit()
         return words
+
+    async def get_kv(self, key: str) -> str | None:
+        async with self.db.execute("SELECT value FROM kv WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def set_kv(self, key: str, value: str) -> None:
+        await self.db.execute(
+            "INSERT INTO kv VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self.db.commit()

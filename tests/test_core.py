@@ -131,6 +131,9 @@ async def test_scanner_parallel_workers(tmp_path):
         def warmup(self):
             pass
 
+        def fits(self, cand):
+            return True
+
         def batch(self, n):
             names = ["velora", "kushon", "vyzern", "lumora", "veskog", "druzos"]
             out = [Candidate(x, "test", 1.0) for x in names if x not in self.seen]
@@ -168,3 +171,73 @@ async def test_rate_limiter_spacing():
     t = time.monotonic()
     await asyncio.gather(*(rl.wait() for _ in range(6)))
     assert time.monotonic() - t >= 0.09  # 5 интервалов по 20 мс
+
+
+def test_settings_bounds_and_toggles():
+    from us_checker.config import Config
+    from us_checker.settings import Settings
+
+    keys = ["markov_en", "markov_it", "syll_dark"]
+    st = Settings.from_config(Config(bot_token="x", strategies=("markov",)), keys)
+    assert st.disabled == {"syll_dark"}
+    st.shift_min(-3)
+    assert st.min_len == 5  # Telegram не даёт меньше
+    for _ in range(20):
+        st.shift_min(1)
+    assert st.min_len == st.max_len  # мин не обгоняет макс
+    st.shift_max(-1)
+    assert st.max_len == st.min_len
+    st.shift_rps(1)
+    assert st.rps == 4.0
+    st.shift_workers(-100)
+    assert st.workers == 1
+    assert st.toggle("markov_en", keys)
+    assert st.toggle("markov_it", keys) is False  # последнюю не выключить
+    assert st.set_group(["markov_en", "markov_it"], True, keys)
+    assert st.enabled(keys) == {"markov_en", "markov_it"}
+    back = Settings.from_json(st.to_json())
+    assert back == st
+
+
+def test_engine_configure_and_fits(engine):
+    engine.configure(6, 6, {"syll_dark", "classical"})
+    try:
+        batch = engine.batch(30)
+        assert batch and all(len(c.name) == 6 for c in batch)
+        assert {c.source for c in batch} <= {"syll_dark", "classical"}
+        assert not engine.fits(Candidate("lumora", "markov_it", 1.0))
+        assert engine.fits(Candidate("anything", "custom", 1.0))
+        with pytest.raises(ValueError):
+            engine.configure(enabled=set())
+    finally:
+        engine.configure(5, 9, set(engine.keys))
+
+
+@pytest.mark.asyncio
+async def test_scanner_apply_live(tmp_path):
+    from us_checker.config import Config
+    from us_checker.scanner import Scanner
+    from us_checker.settings import Settings
+
+    class SlowChecker:
+        async def check(self, name):
+            await asyncio.sleep(10)
+
+    st_db = Storage(str(tmp_path / "a.db"))
+    await st_db.open()
+    sc = Scanner(Config(bot_token="x", workers=2, rps=0), st_db, SlowChecker(), None,
+                 engine=NameEngine(seed=1))
+    sc.queue.put_nowait(Candidate("lumora", "classical", 1.0))
+    sc.queue.put_nowait(Candidate("veskogan", "syll_dark", 1.0))
+    s = Settings(min_len=5, max_len=7, workers=6, rps=10, disabled={"syll_dark"})
+    sc.apply(s)
+    assert [c.name for c in sc.queue._queue] == ["lumora"]  # чужое выкинуто
+    assert sc.limiter.interval == pytest.approx(0.1)
+    sc._producer_task = asyncio.create_task(asyncio.sleep(100))
+    sc.apply(s)
+    assert len(sc._workers) == 6
+    s.workers = 2
+    sc.apply(s)
+    assert len(sc._workers) == 2
+    await sc.stop()
+    await st_db.close()

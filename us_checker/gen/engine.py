@@ -1,5 +1,6 @@
 """Бесконечный поток разнообразных кандидатов."""
 import random
+import threading
 from collections import Counter, deque
 from dataclasses import dataclass
 
@@ -12,8 +13,8 @@ from us_checker.gen.strategies import Strategy, default_strategies
 _GRAMMAR_ENDINGS = ("ed", "ing", "ings", "ly", "tion", "tions", "ment", "mente", "ness", "ies")
 
 
-# Вероятность оставить имя данной длины
-_LENGTH_KEEP = {5: 1.0, 6: 1.0, 7: 0.85, 8: 0.6, 9: 0.4}
+# Вероятность оставить имя в зависимости от того, на сколько оно длиннее минимума
+_LENGTH_KEEP = (1.0, 1.0, 0.85, 0.6, 0.4)
 
 
 @dataclass(frozen=True)
@@ -34,13 +35,14 @@ class NameEngine:
         seed: int | None = None,
         window: int = 80,
     ):
+        # batch() крутится в отдельном потоке, configure() зовётся из бота
+        self._lock = threading.Lock()
         self.min_len, self.max_len = min_len, max_len
-        self.strategies = strategies or default_strategies()
+        self.all_strategies = strategies or default_strategies()
+        self.strategies = self.all_strategies
         if only:
             # STRATEGIES=markov,syll_dark — по префиксу ключа
-            self.strategies = [(s, w) for s, w in self.strategies if s.key.startswith(only)]
-            if not self.strategies:
-                raise ValueError(f"нет стратегий под фильтр {only}")
+            self.configure(enabled={s.key for s, _ in self.all_strategies if s.key.startswith(only)})
         self.min_score = min_score
         self.rng = random.Random(seed)
         self.seen: set[str] = set()
@@ -49,13 +51,45 @@ class NameEngine:
         self._starts: Counter[str] = Counter()
         self._ends: Counter[str] = Counter()
 
+    @property
+    def keys(self) -> list[str]:
+        return [s.key for s, _ in self.all_strategies]
+
+    def configure(
+        self,
+        min_len: int | None = None,
+        max_len: int | None = None,
+        enabled: set[str] | None = None,
+    ) -> None:
+        """Меняет настройки на лету."""
+        strategies = self.strategies
+        if enabled is not None:
+            strategies = [(s, w) for s, w in self.all_strategies if s.key in enabled]
+            if not strategies:
+                raise ValueError("нужна хотя бы одна стратегия")
+        with self._lock:
+            self.strategies = strategies
+            if min_len is not None:
+                self.min_len = min_len
+            if max_len is not None:
+                self.max_len = max_len
+
+    def fits(self, cand: "Candidate") -> bool:
+        """Подходит ли уже сгенерённый кандидат под текущие настройки."""
+        if cand.source == "custom":
+            return True
+        return (
+            self.min_len <= len(cand.name) <= self.max_len
+            and any(s.key == cand.source for s, _ in self.strategies)
+        )
+
     def warmup(self) -> None:
         """Загрузка словарей и обучение цепей (несколько секунд)."""
         known_words()
         _common_index()
         quality.model()
         rng = random.Random(0)
-        for s, _ in self.strategies:
+        for s, _ in self.all_strategies:
             s.make(rng, self.min_len, self.max_len)
 
     def _diverse(self, name: str) -> bool:
@@ -84,12 +118,17 @@ class NameEngine:
         if is_real(name) or looks_like_typo(name):
             return None
         # Короткие ценнее: длинные пропускаем реже
-        if self.rng.random() > _LENGTH_KEEP.get(len(name), 0.3):
+        extra = len(name) - self.min_len
+        if self.rng.random() > (_LENGTH_KEEP[extra] if extra < len(_LENGTH_KEEP) else 0.3):
             return None
         sc = quality.score(name)
         return sc if sc >= self.min_score else None
 
     def batch(self, n: int, max_tries: int | None = None) -> list[Candidate]:
+        with self._lock:
+            return self._batch(n, max_tries)
+
+    def _batch(self, n: int, max_tries: int | None = None) -> list[Candidate]:
         strategies, weights = zip(*self.strategies)
         out: list[Candidate] = []
         tries = max_tries or n * 400
