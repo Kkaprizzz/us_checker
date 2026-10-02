@@ -20,10 +20,10 @@ class Config:
     bot_token: str
     admin_ids: frozenset[int] = field(default_factory=frozenset)
     min_len: int = 5
-    max_len: int = 7
+    max_len: int = 9
     check_delay: float = 1.5
     recheck_days: int = 7
-    include_translit: bool = True
+    sources: tuple[str, ...] = ("styled",)
     wordfreq_top: int = 60000
     db_path: str = "us_checker.db"
 
@@ -41,10 +41,12 @@ def load_config() -> Config:
         admin_ids=admin_ids,
         # Telegram не даёт занять юз короче 5 символов
         min_len=max(5, int(os.environ.get("MIN_LEN", 5))),
-        max_len=min(32, int(os.environ.get("MAX_LEN", 7))),
+        max_len=min(32, int(os.environ.get("MAX_LEN", 9))),
         check_delay=float(os.environ.get("CHECK_DELAY", 1.5)),
         recheck_days=int(os.environ.get("RECHECK_DAYS", 7)),
-        include_translit=os.environ.get("INCLUDE_TRANSLIT", "1") not in ("0", "false", "no"),
+        sources=tuple(
+            x for x in os.environ.get("SOURCES", "styled").replace(" ", "").lower().split(",") if x
+        ),
         wordfreq_top=int(os.environ.get("WORDFREQ_TOP", 60000)),
         db_path=os.environ.get("DB_PATH", "us_checker.db"),
     )

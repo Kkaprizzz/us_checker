@@ -1,0 +1,22 @@
+# Корни для «изысканных» юзов. Генератор клеит к ним эстетичные суффиксы
+# и мутирует (godless -> godeless, godelesse). Формат: корень[:вес], вес 1-3.
+# Тьма / грех / мистика
+god:3 sin:3 dark:3 void:3 doom:2 lust:3 vex:2 nox:3 noir:3 hex:2 grim:2 gloom:2
+ghost:2 shade:2 wrath:2 vice:3 vile:2 venom:2 hell:2 demon:2 devil:2 fate:3
+soul:3 cult:2 myth:2 rune:2 omen:3 abyss:2 ash:2 bone:2 blood:2 crypt:2 grave:2
+mort:2 mor:2 necro:1 umbra:2 nyx:3 lilith:2 morb:1 tomb:1 dusk:2 eclipse:2
+# Свет / роскошь / эстетика
+lux:3 lumen:2 lumi:2 luna:3 sol:2 aura:3 grace:3 velvet:3 vel:2 silk:2 rose:2
+lily:2 glow:2 gold:2 aurum:2 regal:3 royal:2 opal:2 pearl:2 onyx:3 jade:2
+ivory:2 amber:2 crystal:1 bliss:2 muse:3 belle:2 elle:2 vogue:2 chic:2 diva:2
+nova:3 astra:2 stella:2 celest:2 cel:2 ether:2 seraph:2 angel:2 halo:2 eden:3
+# Чувства / вайб
+love:2 heart:2 crave:2 dream:3 sorrow:2 tear:1 rage:2 calm:1 lone:3 lonely:2
+mood:2 vibe:2 whim:2 haze:2 mist:2 frost:2 ember:2 flame:2 blaze:2 spark:2
+wild:2 feral:2 savage:2 chaos:3 kaos:2 rebel:2 riot:2 karma:3 zen:2
+# Статус / сила
+king:2 reign:3 crown:2 throne:2 empire:2 noble:3 lord:2 dux:2 rex:2 imper:2
+alpha:2 apex:3 prime:2 elite:2 vanta:2 titan:2 valor:3 glory:2 honor:2 grand:2
+# Интернет-сленг
+incel:3 sigma:3 chad:2 based:1 cringe:2 simp:2 goth:3 emo:2 edgy:1 drip:2
+rizz:3 aura:2 hype:2 meme:2 psycho:2 manic:2 toxic:2 venus:2 cupid:2

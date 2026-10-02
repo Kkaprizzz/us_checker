@@ -39,7 +39,7 @@ def test_is_clean(name, ok):
 
 
 def test_candidates_are_clean_and_ranked():
-    cands = build_candidates(5, 7, wordfreq_top=20000)
+    cands = build_candidates(5, 7, ("premium", "dict"), wordfreq_top=20000)
     names = [c.name for c in cands]
     assert len(names) == len(set(names))
     assert all(is_clean(n, 5, 7) for n in names)
@@ -76,7 +76,7 @@ async def test_scanner_pass_notifies_free(tmp_path):
 
     st = Storage(str(tmp_path / "s.db"))
     await st.open()
-    cfg = Config(bot_token="x", check_delay=0, wordfreq_top=0, max_len=6)
+    cfg = Config(bot_token="x", check_delay=0, max_len=6, sources=("translit",))
     sc = Scanner(cfg, st, FakeChecker(), on_found)
     sc.running.set()
     await sc._pass()
@@ -84,4 +84,38 @@ async def test_scanner_pass_notifies_free(tmp_path):
     # Второй проход ничего не перепроверяет и не дублирует уведомления
     await sc._pass()
     assert len(found) == 2
+    await st.close()
+
+
+def test_styled_generates_fancy_not_obvious():
+    from us_checker.stylize import generate
+
+    g = generate(5, 9)
+    for fancy in ("godeless", "godelesse", "incelious"):
+        assert fancy in g
+    for obvious in ("godless", "money", "darkness", "gracious"):
+        assert obvious not in g
+    assert not any("ee" in n for n in g)
+
+
+def test_styled_is_default_source():
+    cands = build_candidates()
+    assert cands and all(c.source == "styled" for c in cands)
+    names = {c.name for c in cands}
+    assert "money" not in names
+
+
+def test_custom_words_go_first():
+    cands = build_candidates(extra=["velvora"])
+    assert cands[0].name == "velvora"
+
+
+@pytest.mark.asyncio
+async def test_invalid_is_hidden(tmp_path):
+    st = Storage(str(tmp_path / "i.db"))
+    await st.open()
+    await st.save_check("godeless", "free", 5.0)
+    await st.mark_invalid(["godeless"])
+    assert await st.list_free() == []
+    assert (await st.get_status("godeless"))[0] == "invalid"
     await st.close()

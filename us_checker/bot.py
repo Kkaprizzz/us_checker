@@ -13,21 +13,24 @@ from us_checker.config import Config, load_config
 from us_checker.filters import is_clean
 from us_checker.scanner import Scanner
 from us_checker.storage import Storage
-from us_checker.wordlist import Candidate, score
+from us_checker.wordlist import Candidate, build_candidates, score
 
 log = logging.getLogger(__name__)
 
 HELP = (
-    "<b>Ищу свободные блатные юзы</b> (только a-z, без цифр и _).\n\n"
+    "<b>Ищу свободные изысканные юзы</b> (только a-z, без цифр и _): "
+    "godeless, incelious, noxelle…\n\n"
     "/scan — запустить поиск\n"
     "/pause — пауза\n"
     "/free — что уже нашлось\n"
+    "/bad <code>юз юз …</code> — Telegram сказал «некорректный», больше не показывать\n"
+    "/preview — какие юзы сейчас в очереди\n"
     "/check <code>юз</code> — проверить один юз\n"
     "/add <code>слово слово …</code> — добавить свои слова в приоритет\n"
     "/stats — прогресс\n"
     "/stop — не присылать находки\n\n"
-    "⚠️ «Свободен» = на t.me пусто. Такой юз может быть зарезервирован "
-    "под Fragment или на кулдауне — проверь, поставив его в настройках."
+    "⚠️ «Свободен» = на t.me пусто. Такой юз всё равно может быть в резерве "
+    "у Telegram — проверь в настройках, а нерабочие скидывай в /bad."
 )
 
 
@@ -105,6 +108,27 @@ def build_router(cfg: Config, storage: Storage, scanner: Scanner, checker: TmeCh
         }[status]
         await msg.answer(text)
 
+    @router.message(Command("bad"))
+    async def bad(msg: Message, command: CommandObject) -> None:
+        names = [w.lstrip("@").lower() for w in (command.args or "").replace(",", " ").split()]
+        if not names:
+            await msg.answer("Пример: /bad godeless incelious")
+            return
+        await storage.mark_invalid(names)
+        await msg.answer(f"Убрал {len(names)} шт. Больше их не покажу.")
+
+    @router.message(Command("preview"))
+    async def preview(msg: Message) -> None:
+        cands = build_candidates(
+            cfg.min_len, cfg.max_len, cfg.sources, cfg.wordfreq_top,
+            extra=await storage.extra_words(),
+        )
+        top = [f"{c.name} · {c.score:.1f}" for c in cands[:40]]
+        await msg.answer(
+            f"В очереди {len(cands)} кандидатов ({', '.join(cfg.sources)}). Топ-40:\n"
+            + "\n".join(top)
+        )
+
     @router.message(Command("add"))
     async def add(msg: Message, command: CommandObject) -> None:
         words = [w.lstrip("@").lower() for w in (command.args or "").split()]
@@ -147,6 +171,8 @@ async def run(cfg: Config) -> None:
             BotCommand(command="pause", description="Пауза"),
             BotCommand(command="free", description="Найденные юзы"),
             BotCommand(command="check", description="Проверить юз"),
+            BotCommand(command="bad", description="Отметить нерабочие юзы"),
+            BotCommand(command="preview", description="Очередь кандидатов"),
             BotCommand(command="add", description="Добавить свои слова"),
             BotCommand(command="stats", description="Прогресс"),
         ])

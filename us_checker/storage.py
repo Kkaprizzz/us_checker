@@ -67,6 +67,17 @@ class Storage:
         await self.db.commit()
         return newly_free
 
+    async def mark_invalid(self, usernames: list[str]) -> None:
+        now = int(time.time())
+        await self.db.executemany(
+            """
+            INSERT INTO checks (username, status, checked_at) VALUES (?, 'invalid', ?)
+            ON CONFLICT(username) DO UPDATE SET status = 'invalid', found_at = NULL
+            """,
+            [(u, now) for u in usernames],
+        )
+        await self.db.commit()
+
     async def list_free(self, limit: int = 30) -> list[tuple[str, float]]:
         async with self.db.execute(
             "SELECT username, score FROM checks WHERE status = 'free' "

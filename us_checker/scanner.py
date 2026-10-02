@@ -86,7 +86,7 @@ class Scanner:
         cands = build_candidates(
             self.cfg.min_len,
             self.cfg.max_len,
-            self.cfg.include_translit,
+            self.cfg.sources,
             self.cfg.wordfreq_top,
             extra=await self.storage.extra_words(),
         )
@@ -97,6 +97,8 @@ class Scanner:
             self.position = i
             await self.running.wait()
             prev = await self.storage.get_status(cand.name)
+            if prev and prev[0] == "invalid":
+                continue  # ты отметил его через /bad — больше не трогаем
             if prev and prev[0] != "error" and time.time() - prev[1] < recheck_after:
                 continue
             self.current = cand.name

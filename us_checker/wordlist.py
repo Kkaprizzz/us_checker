@@ -5,6 +5,7 @@ from pathlib import Path
 from wordfreq import top_n_list, zipf_frequency
 
 from us_checker.filters import STOPWORDS, is_clean
+from us_checker.stylize import generate as generate_styled
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -48,22 +49,40 @@ def score(name: str, source: str) -> float:
     return round(s, 3)
 
 
+ALL_SOURCES = ("styled", "premium", "translit", "dict")
+
+
 def build_candidates(
     min_len: int = 5,
-    max_len: int = 7,
-    include_translit: bool = True,
+    max_len: int = 9,
+    sources_enabled: tuple[str, ...] = ("styled",),
     wordfreq_top: int = 60000,
     extra: list[str] | None = None,
 ) -> list[Candidate]:
-    """Возвращает уникальных кандидатов, самые «блатные» первыми."""
-    sources: list[tuple[str, list[str]]] = [
-        ("premium", _read_list(DATA_DIR / "premium.txt")),
-    ]
-    if include_translit:
-        sources.append(("translit", _read_list(DATA_DIR / "translit.txt")))
+    """Возвращает уникальных кандидатов, самые «блатные» первыми.
+
+    styled   — придуманные формы от сильных корней (godeless, incelious), основной режим
+    premium  — ручной список ходовых слов (почти всё зарезервировано Telegram)
+    translit — транслит русских слов
+    dict     — частотный словарь wordfreq
+    """
+    best: dict[str, Candidate] = {}
     if extra:
-        sources.append(("premium", [w.lower() for w in extra]))
-    if wordfreq_top > 0:
+        # Свои слова из /add — всегда первыми
+        for w in extra:
+            if is_clean(w, min_len, max_len):
+                best[w] = Candidate(-100.0, w, "custom")
+    if "styled" in sources_enabled:
+        for w, sc in generate_styled(min_len, max_len).items():
+            if w not in best and is_clean(w, min_len, max_len):
+                best[w] = Candidate(-(sc + PREMIUM_BONUS), w, "styled")
+
+    sources: list[tuple[str, list[str]]] = []
+    if "premium" in sources_enabled:
+        sources.append(("premium", _read_list(DATA_DIR / "premium.txt")))
+    if "translit" in sources_enabled:
+        sources.append(("translit", _read_list(DATA_DIR / "translit.txt")))
+    if "dict" in sources_enabled and wordfreq_top > 0:
         vocab = top_n_list("en", wordfreq_top)
         vocab_set = set(vocab)
         # Множественное число, если в словаре есть единственное, — мусор
@@ -74,7 +93,6 @@ def build_candidates(
         ]
         sources.append(("wordfreq", freq_words))
 
-    best: dict[str, Candidate] = {}
     for source, words in sources:
         for w in words:
             if not is_clean(w, min_len, max_len):
